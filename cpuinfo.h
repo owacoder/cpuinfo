@@ -126,11 +126,16 @@
 #define TMS470_CPU 0
 #endif
 
-#if MSVC_COMPILER
-#include <intrin.h>
-#elif GCC_COMPILER | CLANG_COMPILER
-#include <cpuid.h>
-#include <x86intrin.h>
+#if X86_CPU | AMD64_CPU
+# if MSVC_COMPILER
+#  include <intrin.h>
+# elif GCC_COMPILER | CLANG_COMPILER
+#  include <cpuid.h>
+#  include <x86intrin.h>
+# endif
+#elif ARM_CPU | ARM64_CPU
+# include <sys/auxv.h>
+# include <asm/hwcap.h>
 #endif
 
 #include <cstdint>
@@ -144,9 +149,27 @@ class CpuInfo
     uint32_t subfunctionID;
     bool m_valid;
 
-    void requires(uint32_t function, uint32_t subfunction = 0) {
+    bool set_invalid() {
+        memset(info, 0, 4 * sizeof(*info));
+        return m_valid = false;
+    }
+
+    void requires_x86(uint32_t function, uint32_t subfunction = 0) {
+#if X86_CPU | AMD64_CPU
         if (!m_valid || function != functionID || subfunction != subfunctionID)
             get(function, subfunction);
+#else
+        set_invalid();
+#endif
+    }
+
+    void requires_arm(uint32_t hwcap) {
+#if ARM_CPU | ARM64_CPU
+        if (!m_valid || hwcap != functionID)
+            get_hwcap(hwcap);
+#else
+        set_invalid();
+#endif
     }
 
 #ifndef _XCR_XFEATURE_ENABLED_MASK
@@ -189,10 +212,10 @@ public:
     }
 
     bool get(uint32_t function, uint32_t subfunction = 0) {
+#if AMD64_CPU | X86_CPU
         functionID = function;
         subfunctionID = subfunction;
 
-#if AMD64_CPU | X86_CPU
 #if MSVC_COMPILER
         uint32_t tmp_info[4];
 
@@ -232,8 +255,25 @@ public:
         return false;
 #endif
 #else // Non-x86 CPU
-        memset(info, 0, 4 * sizeof(*info));
-        return m_valid = false;
+        (void) function;
+        (void) subfunction;
+        return set_invalid();
+#endif
+    }
+
+    bool get_hwcap(uint32_t hwcap) {
+#if ARM_CPU | ARM64_CPU
+        unsigned long capabilities = getauxval(hwcap);
+
+        functionID = hwcap;
+
+        info[0] = capabilities;
+        info[1] = info[2] = info[3] = 0;
+
+        return m_valid = true;
+#else
+        (void) hwcap;
+        return set_invalid();
 #endif
     }
 
@@ -253,7 +293,7 @@ public:
     std::string vendor() {
         char vendor_string[16] = {0};
 
-        requires(0);
+        requires_x86(0);
         *reinterpret_cast<uint32_t *>(vendor_string) = ebx();
         *reinterpret_cast<uint32_t *>(vendor_string + 4) = edx();
         *reinterpret_cast<uint32_t *>(vendor_string + 8) = ecx();
@@ -262,7 +302,7 @@ public:
     }
 
     std::string processor_brand_name() {
-        requires(1);
+        requires_x86(1);
 
         switch (ebx() & 0xff) {
             default: return "";
@@ -290,27 +330,27 @@ public:
     }
 
     uint32_t max_standard_cpuid_leaf() {
-        requires(0);
+        requires_x86(0);
         return eax();
     }
     uint32_t max_extended_cpuid_leaf() {
-        requires(0x80000000);
+        requires_x86(0x80000000);
         return eax();
     }
 
     uint8_t processor_stepping() {
-        requires(1);
+        requires_x86(1);
         return eax(0, 4);
     }
     uint8_t processor_model() {
-        requires(1);
+        requires_x86(1);
         uint16_t family = processor_family();
         if (family == 0x06 || family == 0x0F)
             return (eax(16, 4) << 4) + eax(4, 4);
         return eax(4, 4);
     }
     uint16_t processor_family() {
-        requires(1);
+        requires_x86(1);
         uint16_t temp = eax(8, 4);
         if (temp != 0x0F)
             return temp;
@@ -318,7 +358,7 @@ public:
             return temp + eax(20, 8);
     }
     uint8_t processor_type() {
-        requires(1);
+        requires_x86(1);
         return eax(12, 2);
     }
 
@@ -328,16 +368,16 @@ public:
     bool processor_type_is_Intel_reserved() {return processor_type() == 0b11;}
 
     uint8_t processor_brand_index() {
-        requires(1);
+        requires_x86(1);
         return ebx(0, 8);
     }
     uint16_t processor_cache_line_size() {
-        requires(1);
+        requires_x86(1);
         return ebx(8, 8) * 8;
     }
 
     bool feature_SSE3_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(0);
     }
     bool feature_SSE3_supported_by_OS() {
@@ -347,39 +387,39 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_PCLMULQDQ_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(1);
     }
     bool feature_64_bit_DS_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(2);
     }
     bool feature_MONITOR_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(3);
     }
     bool feature_CPL_qualified_debug_store_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(4);
     }
     bool feature_VMX_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(5);
     }
     bool feature_SMX_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(6);
     }
     bool feature_Intel_SpeedStep_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(7);
     }
     bool feature_TM2_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(8);
     }
     bool feature_SSSE3_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(9);
     }
     bool feature_SSSE3_supported_by_OS() {
@@ -389,39 +429,39 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_L1_context_ID_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(10);
     }
     bool feature_SDBG_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(11);
     }
     bool feature_FMA3_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(12);
     }
     bool feature_CMPXCHG16B_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(13);
     }
     bool feature_xTPR_update_control_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(14);
     }
     bool feature_PDCM_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(15);
     }
     bool feature_PCID_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(17);
     }
     bool feature_DCA_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(18);
     }
     bool feature_SSE4_1_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(19);
     }
     bool feature_SSE4_1_supported_by_OS() {
@@ -431,7 +471,7 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_SSE4_2_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(20);
     }
     bool feature_SSE4_2_supported_by_OS() {
@@ -441,38 +481,100 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_x2APIC_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(21);
     }
     bool feature_MOVBE_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(22);
     }
     bool feature_POPCNT_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(23);
     }
     bool feature_TSC_deadline_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(24);
     }
-    bool feature_AESNI_supported() {
-        requires(1);
+    bool feature_AES_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP2);
+        return eax() & HWCAP2_AES;
+#elif ARM64_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_AES;
+#else
+        requires_x86(1);
         return ecx(25);
+#endif
+    }
+    bool feature_CRC32_supported() {
+#if X86_CPU | AMD64_CPU
+        return true;
+#elif ARM_CPU
+        requires_arm(AT_HWCAP2);
+        return eax() & HWCAP2_CRC32;
+#elif ARM64_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_CRC32;
+#else
+        return false;
+#endif
+    }
+    bool feature_PMULL_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP2);
+        return eax() & HWCAP2_PMULL;
+#elif ARM64_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_PMULL;
+#else
+        return false;
+#endif
+    }
+    bool feature_VFP_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_VFP;
+#elif ARM64_CPU
+        return true;
+#else
+        return false;
+#endif
+    }
+    bool feature_IWMMXT_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_IWMMXT;
+#elif ARM64_CPU
+        return true; // TODO: is it correct that all AArch64 processors have IWMMXT?
+#else
+        return false;
+#endif
+    }
+    bool feature_NEON_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_NEON;
+#elif ARM64_CPU
+        return true;
+#else
+        return false;
+#endif
     }
     bool feature_XSAVE_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(26);
     }
     bool feature_XSAVE_supported_by_OS() {
         if (!feature_XSAVE_supported_by_processor())
             return false;
 
-        requires(1);
+        requires_x86(1);
         return ecx(27);
     }
     bool feature_AVX_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return ecx(28);
     }
     bool feature_AVX_supported_by_OS() {
@@ -482,108 +584,108 @@ public:
         return (xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x6) == 0x6;
     }
     bool feature_F16C_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(29);
     }
     bool feature_RDRAND_supported() {
-        requires(1);
+        requires_x86(1);
         return ecx(30);
     }
 
     bool feature_FPU_on_chip() {
-        requires(1);
+        requires_x86(1);
         return edx(0);
     }
     bool feature_VME_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(1);
     }
     bool feature_DE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(2);
     }
     bool feature_PSE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(3);
     }
     bool feature_TSC_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(4);
     }
     bool feature_MSR_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(5);
     }
     bool feature_PAE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(6);
     }
     bool feature_MCE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(7);
     }
     bool feature_CMPXCHG8B_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(8);
     }
     bool feature_APIC_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(9);
     }
     bool feature_SEP_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(11);
     }
     bool feature_MTRR_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(12);
     }
     bool feature_PGE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(13);
     }
     bool feature_MCA_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(14);
     }
     bool feature_CMOV_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(15);
     }
     bool feature_PAT_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(16);
     }
     bool feature_PSE_36_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(17);
     }
     bool feature_PSN_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(18);
     }
     bool feature_CLFLUSH_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(19);
     }
     bool feature_debug_store_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(21);
     }
     bool feature_ACPI_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(22);
     }
     bool feature_MMX_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(23);
     }
     bool feature_FXSR_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(24);
     }
     bool feature_SSE_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return edx(25);
     }
     bool feature_SSE_supported_by_OS() {
@@ -593,7 +695,7 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_SSE2_supported_by_processor() {
-        requires(1);
+        requires_x86(1);
         return edx(26);
     }
     bool feature_SSE2_supported_by_OS() {
@@ -603,19 +705,19 @@ public:
         return xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x2;
     }
     bool feature_self_snoop_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(27);
     }
     bool feature_HTT_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(28);
     }
     bool feature_TM_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(29);
     }
     bool feature_PBE_supported() {
-        requires(1);
+        requires_x86(1);
         return edx(31);
     }
 
@@ -625,7 +727,7 @@ public:
         if (!feature_PSN_supported())
             return 0;
 
-        requires(3);
+        requires_x86(3);
 
         return (uint64_t(edx()) << 32) | ecx();
     }
@@ -633,144 +735,144 @@ public:
     // TODO: leaf 04H
 
     uint16_t monitor_line_size_minimum() {
-        requires(5);
+        requires_x86(5);
         return eax(0, 16);
     }
     uint16_t monitor_line_size_maximum() {
-        requires(5);
+        requires_x86(5);
         return ebx(0, 16);
     }
 
     bool monitor_mwait_extension_enumeration_supported() {
-        requires(5);
+        requires_x86(5);
         return ecx(0);
     }
     bool monitor_mwait_interrupts_break_even_when_disabled() {
-        requires(5);
+        requires_x86(5);
         return ecx(1);
     }
 
     uint8_t mwait_sub_C_states_supported(uint8_t _class) {
-        requires(5);
+        requires_x86(5);
         if (_class > 7)
             return 0;
         return edx(4 * _class, 4);
     }
 
     bool thermal_digital_sensor_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(0);
     }
     bool thermal_Intel_TurboBoost_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(1);
     }
     bool thermal_APIC_timer_always_running_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(2);
     }
     bool thermal_PLN_controls_supported() { // Power limit notification controls
-        requires(6);
+        requires_x86(6);
         return eax(4);
     }
     bool thermal_ECMD_supported() { // Clock modulation duty cycle extension
-        requires(6);
+        requires_x86(6);
         return eax(5);
     }
     bool thermal_PTM_supported() { // Package thermal management
-        requires(6);
+        requires_x86(6);
         return eax(6);
     }
     bool thermal_HWP_supported() { // HWP base registers
-        requires(6);
+        requires_x86(6);
         return eax(7);
     }
     bool thermal_HWP_notification_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(8);
     }
     bool thermal_HWP_Activity_Window_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(9);
     }
     bool thermal_HWP_Energy_Performance_Preference_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(10);
     }
     bool thermal_HWP_Package_Level_Request_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(11);
     }
     bool thermal_HDC_supported() { // HDC base registers
-        requires(6);
+        requires_x86(6);
         return eax(13);
     }
     bool thermal_Intel_Turbo_Boost_3_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(14);
     }
     bool thermal_Highest_Performance_change_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(15);
     }
     bool thermal_HWP_PECI_override_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(16);
     }
     bool thermal_flexible_HWP_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(17);
     }
     bool thermal_HWP_request_fast_access_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(18);
     }
     bool thermal_ignoring_idle_logical_processor_supported() {
-        requires(6);
+        requires_x86(6);
         return eax(20);
     }
 
     uint8_t thermal_sensor_interrupt_thresholds() {
-        requires(6);
+        requires_x86(6);
         return ebx(0, 4);
     }
 
     bool thermal_hardware_coordination_feedback_supported() {
-        requires(6);
+        requires_x86(6);
         return ecx(0);
     }
     bool thermal_performance_energy_bias_preference() {
-        requires(6);
+        requires_x86(6);
         return ecx(3);
     }
 
     uint32_t maximum_07H_subleaf() {
-        requires(7);
+        requires_x86(7);
         return eax();
     }
 
     bool feature_FSGSBASE_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(0);
     }
     bool feature_tsc_adjust_msr_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(1);
     }
     bool feature_Software_Guard_Extensions_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(2);
     }
     bool feature_BMI1_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(3);
     }
     bool feature_HLE_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(4);
     }
     bool feature_AVX2_supported_by_processor() {
-        requires(7);
+        requires_x86(7);
         return ebx(5);
     }
     bool feature_AVX2_supported_by_OS() {
@@ -780,217 +882,236 @@ public:
         return (xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x6) == 0x6;
     }
     bool feature_FPU_data_pointer_updated_on_exceptions() {
-        requires(7);
+        requires_x86(7);
         return ebx(6);
     }
     bool feature_SMEP_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(7);
     }
     bool feature_BMI2_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(8);
     }
     bool feature_enhanced_REP_MOVSB_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(9);
     }
     bool feature_INVPCID_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(10);
     }
     bool feature_RTM_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(11);
     }
     bool feature_RDT_M_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(12);
     }
     bool feature_deprecated_FPU_CS_and_DS() {
-        requires(7);
+        requires_x86(7);
         return ebx(13);
     }
     bool feature_MPX_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(14);
     }
     bool feature_RDT_A_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(15);
     }
     bool feature_AVX512F_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(16);
     }
     bool feature_AVX512DQ_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(17);
     }
     bool feature_RDSEED_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(18);
     }
     bool feature_ADX_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(19);
     }
     bool feature_SMAP_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(20);
     }
     bool feature_AVX512_IFMA_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(21);
     }
     bool feature_CLFLUSHOPT_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(23);
     }
     bool feature_CLWB_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(24);
     }
     bool feature_Intel_Processor_Trace_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(25);
     }
     bool feature_AVX512PF_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(26);
     }
     bool feature_AVX512ER_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(27);
     }
     bool feature_AVX512CD_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(28);
     }
-    bool feature_SHA_supported() {
-        requires(7);
+    bool feature_SHA1_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP2);
+        return eax() & HWCAP2_SHA1;
+#elif ARM64_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_SHA1;
+#else
+        requires_x86(7);
         return ebx(29);
+#endif
+    }
+    bool feature_SHA2_supported() {
+#if ARM_CPU
+        requires_arm(AT_HWCAP2);
+        return eax() & HWCAP2_SHA2;
+#elif ARM64_CPU
+        requires_arm(AT_HWCAP);
+        return eax() & HWCAP_SHA2;
+#else
+        return feature_SHA1_supported();
+#endif
     }
     bool feature_AVX512BW_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(30);
     }
     bool feature_AVX512VL_supported() {
-        requires(7);
+        requires_x86(7);
         return ebx(31);
     }
 
     bool feature_PREFETCHWT1_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(0);
     }
     bool feature_AVX512_VBMI_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(1);
     }
     bool feature_UMIP_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(2);
     }
     bool feature_PKU_supported_by_processor() {
-        requires(7);
+        requires_x86(7);
         return ecx(3);
     }
     bool feature_PKU_supported_by_OS() {
-        requires(7);
+        requires_x86(7);
         return ecx(4);
     }
     bool feature_AVX512_VPOPCNTDQ_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(14);
     }
     uint8_t feature_MAWAU() {
-        requires(7);
+        requires_x86(7);
         return ecx(17, 5);
     }
     bool feature_RDPID_and_TSC_AUX_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(22);
     }
     bool feature_SGX_Launch_Configuration_supported() {
-        requires(7);
+        requires_x86(7);
         return ecx(30);
     }
 
     bool feature_AVX512_4VNNIW_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(2);
     }
     bool feature_AVX512_4FMAPS_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(3);
     }
     bool feature_IBRS_and_IBPB_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(26);
     }
     bool feature_STIBP_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(27);
     }
     bool feature_L1D_FLUSH_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(28);
     }
     bool feature_arch_capabilities_MSR_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(29);
     }
     bool feature_SSBD_supported() {
-        requires(7);
+        requires_x86(7);
         return edx(31);
     }
 
     // TODO: 09H
 
     uint8_t arch_performance_version_ID() {
-        requires(0xA);
+        requires_x86(0xA);
         return eax(0, 8);
     }
     uint8_t arch_performance_counter_per_logical_processor() {
-        requires(0xA);
+        requires_x86(0xA);
         return eax(8, 8);
     }
     uint8_t arch_performance_counter_bit_width() {
-        requires(0xA);
+        requires_x86(0xA);
         return eax(16, 8);
     }
     uint8_t arch_performance_EBX_bit_vector_length() {
-        requires(0xA);
+        requires_x86(0xA);
         return eax(24, 8);
     }
 
     bool arch_performance_core_cycle_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(0);
     }
     bool arch_performance_instruction_retired_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(1);
     }
     bool arch_performance_reference_cycles_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(2);
     }
     bool arch_performance_last_level_cache_reference_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(3);
     }
     bool arch_performance_last_level_cache_misses_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(4);
     }
     bool arch_performance_branch_instruction_retired_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(5);
     }
     bool arch_performance_branch_mispredict_retired_event_available() {
-        requires(0xA);
+        requires_x86(0xA);
         return ebx(6);
     }
 
@@ -998,7 +1119,7 @@ public:
         if (arch_performance_version_ID() <= 1)
             return 0;
 
-        requires(0xA);
+        requires_x86(0xA);
 
         return edx(0, 5);
     }
@@ -1006,54 +1127,54 @@ public:
         if (arch_performance_version_ID() <= 1)
             return 0;
 
-        requires(0xA);
+        requires_x86(0xA);
 
         return edx(5, 8);
     }
     bool arch_performance_AnyThread_deprecated() {
-        requires(0xA);
+        requires_x86(0xA);
         return edx(15);
     }
 
     // TODO: 0BH
 
     uint64_t XCR0_supported_bits() {
-        requires(0xD);
+        requires_x86(0xD);
         return (uint64_t(edx()) << 32) | eax();
     }
     uint32_t XSAVE_XRSTOR_maximum_size_of_all_enabled_features() {
-        requires(0xD);
+        requires_x86(0xD);
         return ebx();
     }
     uint32_t XSAVE_XRSTOR_maximum_size_of_all_supported_features() {
-        requires(0xD);
+        requires_x86(0xD);
         return ecx();
     }
 
     bool feature_XSAVEOPT_supported() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return eax(0);
     }
     bool feature_XSAVEC_and_compacted_XRSTOR_supported() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return eax(1);
     }
     bool feature_XGETBV_1_supported() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return eax(2);
     }
     bool feature_XSAVES_and_XRSTORS_supported() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return eax(3);
     }
 
     uint32_t size_of_XCR0_XSS_enabled_states() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return ebx();
     }
 
     uint64_t XSS_MSR_supported_bits() {
-        requires(0xD, 1);
+        requires_x86(0xD, 1);
         return (uint64_t(edx()) << 32) | ecx();
     }
 
@@ -1064,38 +1185,38 @@ public:
     // TODO: 15H
 
     uint16_t processor_base_frequency_MHz() {
-        requires(0x16);
+        requires_x86(0x16);
         return eax(0, 16);
     }
     uint16_t processor_max_frequency_MHz() {
-        requires(0x16);
+        requires_x86(0x16);
         return ebx(0, 16);
     }
     uint16_t processor_bus_reference_frequency_MHz() {
-        requires(0x16);
+        requires_x86(0x16);
         return ecx(0, 16);
     }
 
     uint32_t max_SOCID_index() {
-        requires(0x17);
+        requires_x86(0x17);
         return eax();
     }
     uint16_t SOC_vendor_ID() {
-        requires(0x17);
+        requires_x86(0x17);
         return ebx(0, 16);
     }
     bool SOC_vendor_ID_is_standard() {
-        requires(0x17);
+        requires_x86(0x17);
         return ebx(16);
     }
     bool SOC_vendor_ID_is_assigned_by_Intel() {return !SOC_vendor_ID_is_standard();}
 
     uint32_t SOC_project_ID() {
-        requires(0x17);
+        requires_x86(0x17);
         return ecx();
     }
     uint32_t SOC_stepping_ID() {
-        requires(0x17);
+        requires_x86(0x17);
         return edx();
     }
 
@@ -1104,7 +1225,7 @@ public:
 
         for (uint32_t i = 0; i < 3; ++i)
         {
-            requires(0x17, 1 + i);
+            requires_x86(0x17, 1 + i);
             if (!valid())
                 return std::string();
 
@@ -1121,76 +1242,76 @@ public:
     // TODO: 1FH
 
     bool feature_64_bit_LAHF_SAHF_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(0);
     }
     bool feature_SVM_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(2);
     }
     bool feature_LZCNT_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(5);
     }
     bool feature_SSE4A_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(6);
     }
     bool feature_PREFETCHW_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(8);
     }
     bool feature_3DNow_PREFETCH_supported() {return feature_PREFETCHW_supported();}
     bool feature_XOP_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(11);
     }
     bool feature_SKINIT_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(12);
     }
     bool feature_FMA4_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(16);
     }
     bool feature_TBM_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(21);
     }
     bool feature_MONITORX_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return ecx(29);
     }
     bool feature_64_bit_SYSCALL_SYSRET_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(11);
     }
     bool feature_execute_disable_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(20);
     }
     bool feature_MMX_extensions_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(22);
     }
     bool feature_1GB_pages_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(26);
     }
     bool feature_RDTSCP_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(27);
     }
     bool feature_64_bit_mode_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(29);
     }
     bool feature_3DNow_extensions_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(30);
     }
     bool feature_3DNow_supported() {
-        requires(0x80000001);
+        requires_x86(0x80000001);
         return edx(31);
     }
 
@@ -1199,7 +1320,7 @@ public:
 
         for (uint32_t i = 0; i < 3; ++i)
         {
-            requires(0x80000002 + i);
+            requires_x86(0x80000002 + i);
             if (!valid())
                 return std::string();
 
@@ -1213,25 +1334,25 @@ public:
     }
 
     uint8_t cache_line_size() {
-        requires(0x80000006);
+        requires_x86(0x80000006);
         return ecx(0, 8);
     }
     uint32_t cache_size() {
-        requires(0x80000006);
+        requires_x86(0x80000006);
         return ecx(16, 16) * 1024;
     }
 
     bool feature_invariant_TSC_supported() {
-        requires(0x80000007);
+        requires_x86(0x80000007);
         return edx(8);
     }
 
     uint8_t physical_address_bits() {
-        requires(0x80000008);
+        requires_x86(0x80000008);
         return eax(0, 8);
     }
     uint8_t linear_address_bits() {
-        requires(0x80000008);
+        requires_x86(0x80000008);
         return eax(8, 8);
     }
 
