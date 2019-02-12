@@ -21,6 +21,8 @@ Or, lower level access allows you to create an instance with parameters to send 
     std::cout << "ECX: " << info.ecx() << "\n";
     std::cout << "EDX: " << info.edx() << "\n";
     
+You can also use the `get()` function to create low-level `CPUID` requests.
+    
 All functions should return an empty string, `false`, or 0 if `valid()` returns `false`.
 
 An example of how to use `CpuInfo` in the wild as a POPCNT dispatcher:
